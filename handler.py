@@ -7,8 +7,17 @@ Two input modes:
               plus the NVENC capability probe. No external inputs. This is the
               "is the GPU box wired up correctly" smoke test.
 
-  job       — real render: download ``source_url``, render the supplied
-              ``segments`` + ``transcript`` into the requested variants.
+  job       — real render: read the source, render the supplied ``segments``
+              + ``transcript`` into the requested variants. The source arrives
+              one of two ways: ``source_key`` (the preferred path — an object
+              on the RunPod network volume mounted at /runpod-volume, read as a
+              local file; each variant is written back under ``output_prefix``
+              and its key returned) or the legacy ``source_url`` (downloaded
+              from a temp host, variants uploaded back via ``upload_results``).
+
+  volume_ls — diagnostic: list the mounted network volume and return the tree.
+              Used to verify that an object PUT at S3 key ``clipper/x/y.mp4``
+              lands at ``/runpod-volume/clipper/x/y.mp4``.
 
 Either way the response carries the ffmpeg capability probe so you can confirm
 ``h264_nvenc`` is actually being used on the box.
@@ -154,15 +163,54 @@ def _probe_duration(path: Path) -> float:
 
 
 # ---------------------------------------------------------------------------
+# network volume (S3-backed) transport
+# ---------------------------------------------------------------------------
+
+# The RunPod network volume mounts here; the app PUTs source objects to the
+# same volume over the S3 gateway and reads variants back by key.
+VOLUME_ROOT = Path(os.getenv("RUNPOD_VOLUME_PATH", "/runpod-volume"))
+
+
+def _list_tree(root: Path, limit: int = 300) -> dict:
+    """List files under ``root`` (relative paths + sizes) for diagnostics."""
+    info: dict = {"root": str(root), "exists": root.exists(), "files": []}
+    if not root.exists():
+        return info
+    n = 0
+    for p in sorted(root.rglob("*")):
+        if not p.is_file():
+            continue
+        try:
+            sz = p.stat().st_size
+        except OSError:
+            sz = -1
+        info["files"].append({"key": str(p.relative_to(root)).replace("\\", "/"),
+                              "bytes": sz})
+        n += 1
+        if n >= limit:
+            info["truncated"] = True
+            break
+    return info
+
+
+# ---------------------------------------------------------------------------
 # handler
 # ---------------------------------------------------------------------------
 
 def handler(event: dict) -> dict:
     inp = (event or {}).get("input") or {}
+
+    # Cheap diagnostic: confirm the network volume is mounted and inspect the
+    # S3-key -> volume-path mapping without rendering anything.
+    if inp.get("volume_ls"):
+        return {"ok": True, "mode": "volume_ls",
+                "volume": _list_tree(VOLUME_ROOT)}
+
     selftest = bool(inp.get("selftest", False))
     return_video = bool(inp.get("return_video", False))
     upload_results = bool(inp.get("upload_results", False))
     result_ttl = str(inp.get("result_ttl", "24h"))
+    output_prefix = inp.get("output_prefix")
     out_w, out_h = parse_format(inp.get("format"))
     fps = float(inp.get("fps", 30))
 
@@ -182,10 +230,26 @@ def handler(event: dict) -> dict:
             n = int(inp.get("variants_count", 3))
             variants = [(d.pack, d.subtitle_mode) for d in pick_style_descriptors(n)]
         else:
+            source_key = inp.get("source_key")
             source_url = inp.get("source_url")
-            if not source_url:
-                raise ValueError("job mode requires 'source_url'")
-            _download(source_url, src)
+            if source_key:
+                # Preferred path: the source is an object on the shared volume.
+                vol_src = VOLUME_ROOT / source_key
+                if not vol_src.exists():
+                    # Surface the real mount layout so a broken S3-key ->
+                    # volume-path assumption is diagnosable, not a silent miss.
+                    return {
+                        "ok": False,
+                        "error": f"source_key not found on volume: {vol_src}",
+                        "volume": _list_tree(VOLUME_ROOT),
+                        "ffmpeg_caps": _ffmpeg_caps(),
+                    }
+                src = vol_src
+            elif source_url:
+                _download(source_url, src)
+            else:
+                raise ValueError(
+                    "job mode requires 'source_key' or 'source_url'")
 
             transcript = inp.get("transcript")
             if not transcript:
@@ -225,7 +289,17 @@ def handler(event: dict) -> dict:
             p = Path(r["path"])
             r["bytes"] = p.stat().st_size if p.exists() else 0
             r["duration_s"] = _probe_duration(p)
-            if upload_results and p.exists():
+            if output_prefix and p.exists():
+                # Volume mode: write the variant back onto the shared volume and
+                # return its key; the app GETs it over the S3 gateway.
+                idx = int(r.get("index", 0))
+                pack = r.get("pack", "")
+                rel = f"{output_prefix}/variant_{idx:02d}_{pack}.mp4"
+                dst = VOLUME_ROOT / rel
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(p, dst)
+                r["key"] = rel
+            elif upload_results and p.exists():
                 r["url"] = _upload_litterbox(p, ttl=result_ttl)
             if return_video and p.exists():
                 r["mp4_base64"] = base64.b64encode(p.read_bytes()).decode("ascii")
