@@ -33,4 +33,11 @@ COPY engine ./engine
 COPY fixtures ./fixtures
 COPY handler.py render_job.py ./
 
+# Import gate: exercise the whole render closure at BUILD time (runpod is only
+# imported under __main__, so this doesn't need a GPU). A missing system lib or
+# broken import fails the build here instead of silently parking every job in
+# the queue with idle-but-non-serving workers.
+RUN python3 -c "import handler" \
+    && echo "import closure OK"
+
 CMD ["python3", "-u", "handler.py"]
