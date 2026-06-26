@@ -117,6 +117,31 @@ def _download(url: str, dst: Path) -> None:
         shutil.copyfileobj(r, f)
 
 
+def _upload_litterbox(path: Path, ttl: str = "24h") -> str:
+    """Upload a rendered variant to litterbox and return its temp URL.
+
+    Real 1080x1920 outputs are tens of MB each — far over RunPod's inline
+    result limit — so when the caller asks for ``upload_results`` we push each
+    mp4 to a short-lived host and return URLs the app downloads. litterbox is a
+    no-auth temp host (1h/12h/24h/72h TTL); production should point this at
+    private object storage instead.
+    """
+    r = _run([
+        "curl", "-s", "--max-time", "300",
+        "-F", "reqtype=fileupload",
+        "-F", f"time={ttl}",
+        "-F", f"fileToUpload=@{path}",
+        "https://litterbox.catbox.moe/resources/internals/api.php",
+    ], timeout=320)
+    url = (r.stdout or "").strip()
+    if not url.startswith("http"):
+        raise RuntimeError(
+            f"litterbox upload failed (rc={r.returncode}): "
+            f"out={url[:200]!r} err={(r.stderr or '')[:200]!r}"
+        )
+    return url
+
+
 def _probe_duration(path: Path) -> float:
     try:
         r = _run([
@@ -136,6 +161,8 @@ def handler(event: dict) -> dict:
     inp = (event or {}).get("input") or {}
     selftest = bool(inp.get("selftest", False))
     return_video = bool(inp.get("return_video", False))
+    upload_results = bool(inp.get("upload_results", False))
+    result_ttl = str(inp.get("result_ttl", "24h"))
     out_w, out_h = parse_format(inp.get("format"))
     fps = float(inp.get("fps", 30))
 
@@ -198,6 +225,8 @@ def handler(event: dict) -> dict:
             p = Path(r["path"])
             r["bytes"] = p.stat().st_size if p.exists() else 0
             r["duration_s"] = _probe_duration(p)
+            if upload_results and p.exists():
+                r["url"] = _upload_litterbox(p, ttl=result_ttl)
             if return_video and p.exists():
                 r["mp4_base64"] = base64.b64encode(p.read_bytes()).decode("ascii")
             r.pop("path", None)

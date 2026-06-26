@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ffmpeg \
         fonts-dejavu-core \
         ca-certificates \
+        curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Fail the build if this ffmpeg can't do NVENC or libass — the whole point of
