@@ -75,7 +75,7 @@ def _ffmpeg_caps() -> dict:
     try:
         probe = _run([
             "ffmpeg", "-hide_banner", "-loglevel", "error",
-            "-f", "lavfi", "-i", "testsrc2=size=128x128:rate=15:duration=0.2",
+            "-f", "lavfi", "-i", "testsrc2=size=256x256:rate=15:duration=0.2",
             "-c:v", "h264_nvenc", "-f", "null", "-",
         ])
         caps["nvenc_encode_ok"] = probe.returncode == 0
