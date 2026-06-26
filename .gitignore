@@ -1,0 +1,20 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# render artifacts
+*.mp4
+*.ass
+*.concat.txt
+out/
+_smoke/
+
+# stray images, but keep nothing binary except tracked fonts
+*.png
+*.jpg
+
+# keep tracked assets
+!engine/assets/fonts/*.ttf
+!fixtures/*.json

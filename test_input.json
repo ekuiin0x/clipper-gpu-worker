@@ -1,0 +1,8 @@
+{
+  "input": {
+    "selftest": true,
+    "variants_count": 3,
+    "seconds": 15,
+    "return_video": false
+  }
+}
