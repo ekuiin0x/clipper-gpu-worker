@@ -1,6 +1,9 @@
 from __future__ import annotations
 from enum import Enum
-from typing import Self
+try:
+    from typing import Self  # Python 3.11+
+except ImportError:  # 3.10 container ships typing_extensions via pydantic
+    from typing_extensions import Self
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
