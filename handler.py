@@ -41,7 +41,7 @@ from pathlib import Path
 
 from engine.clipmaker import parse_format, pick_style_descriptors
 from engine.encoder import render_gpu_enabled
-from render_job import Segment, run_render_job
+from render_job import Segment, compose_base_only, run_render_job
 
 _HERE = Path(__file__).resolve().parent
 _FIXTURES = _HERE / "fixtures"
@@ -207,6 +207,7 @@ def handler(event: dict) -> dict:
                 "volume": _list_tree(VOLUME_ROOT)}
 
     selftest = bool(inp.get("selftest", False))
+    compose_only = bool(inp.get("compose_only", False))
     return_video = bool(inp.get("return_video", False))
     upload_results = bool(inp.get("upload_results", False))
     result_ttl = str(inp.get("result_ttl", "24h"))
@@ -252,10 +253,13 @@ def handler(event: dict) -> dict:
                     "job mode requires 'source_key' or 'source_url'")
 
             transcript = inp.get("transcript")
-            if not transcript:
+            # compose_only renders the bare base (no caption stamp), so the
+            # transcript is irrelevant — let the app skip shipping it.
+            if not transcript and not compose_only:
                 raise ValueError("job mode requires 'transcript'")
             transcript_path = work_dir / "transcript.json"
-            transcript_path.write_text(json.dumps(transcript), encoding="utf-8")
+            transcript_path.write_text(
+                json.dumps(transcript or {"phrases": []}), encoding="utf-8")
 
             raw_segments = inp.get("segments") or []
             if not raw_segments:
@@ -272,18 +276,29 @@ def handler(event: dict) -> dict:
                 n = int(inp.get("variants_count", 3))
                 variants = [(d.pack, d.subtitle_mode) for d in pick_style_descriptors(n)]
 
-        results = run_render_job(
-            src=src,
-            segments=segments,
-            transcript_path=transcript_path,
-            variants=variants,
-            out_w=out_w,
-            out_h=out_h,
-            fps=fps,
-            work_dir=work_dir,
-            brand_is_watermark=True,
-            brand_channel=inp.get("brand_channel"),
-        )
+        if compose_only:
+            # Single-clip /generate offload: compose the unstyled base only.
+            results = compose_base_only(
+                src=src,
+                segments=segments,
+                out_w=out_w,
+                out_h=out_h,
+                fps=fps,
+                work_dir=work_dir,
+            )
+        else:
+            results = run_render_job(
+                src=src,
+                segments=segments,
+                transcript_path=transcript_path,
+                variants=variants,
+                out_w=out_w,
+                out_h=out_h,
+                fps=fps,
+                work_dir=work_dir,
+                brand_is_watermark=True,
+                brand_channel=inp.get("brand_channel"),
+            )
 
         for r in results:
             p = Path(r["path"])

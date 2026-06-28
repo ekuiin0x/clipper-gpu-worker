@@ -44,6 +44,50 @@ def _clip_duration(segments: list[Segment]) -> float:
     return max(0.0, segments[-1].t_end - segments[0].t_start)
 
 
+def compose_base_only(
+    *,
+    src: Path,
+    segments: list[Segment],
+    out_w: int,
+    out_h: int,
+    fps: float,
+    work_dir: Path,
+) -> list[dict]:
+    """Compose the 9:16 base ONCE and return it unstyled (no caption stamp).
+
+    This is the single-clip ``/generate`` offload: the app plans + transcribes
+    locally, ships the source + segments here for the expensive NVENC compose,
+    and burns its chosen style locally on the returned base. Result shape mirrors
+    :func:`run_render_job` (one entry) so the handler's volume write-back loop is
+    unchanged; ``pack`` is empty and ``stamp_s`` is 0.
+    """
+    work_dir = Path(work_dir)
+    work_dir.mkdir(parents=True, exist_ok=True)
+    base_path = work_dir / "base_00.mp4"
+    t0 = time.time()
+    render_variant_base(
+        src=Path(src),
+        segments=segments,
+        variant_index=0,
+        out_w=out_w,
+        out_h=out_h,
+        fps=fps,
+        work_dir=work_dir / "base_00_work",
+        dst=base_path,
+    )
+    compose_s = time.time() - t0
+    return [{
+        "index": 0,
+        "pack": "",
+        "subtitle_mode": "",
+        "path": str(base_path),
+        "compose_s": round(compose_s, 2),
+        "stamp_s": 0.0,
+        "reused_base": False,
+        "compose_only": True,
+    }]
+
+
 def run_render_job(
     *,
     src: Path,
