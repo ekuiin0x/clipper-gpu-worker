@@ -81,3 +81,47 @@ def test_return_video_opts_out_of_progressive(tmp_path, monkeypatch):
     assert out["ok"], out
     assert seen["on_variant"] is None        # base64 path needs local files
     assert out["variants"][0]["mp4_base64"]
+
+
+def test_publish_hiccup_mid_render_is_healed_by_post_loop(tmp_path, monkeypatch):
+    """If the mid-render _publish write raises (transient volume hiccup),
+    run_render_job swallows it and the variant keeps its local path, so the
+    end-of-job post-loop republishes it — the variant still lands on the
+    volume and appears in the output with a key, never lost."""
+    vol = _wire(tmp_path, monkeypatch)
+    calls = {"copy2": 0}
+    real_copy2 = h.shutil.copy2
+
+    def flaky_copy2(src, dst, *a, **k):
+        calls["copy2"] += 1
+        if calls["copy2"] == 1:
+            raise OSError("volume hiccup")   # first (mid-render) write fails
+        return real_copy2(src, dst, *a, **k)  # post-loop retry succeeds
+
+    monkeypatch.setattr(h.shutil, "copy2", flaky_copy2)
+
+    def fake_run_render_job(*, work_dir, on_variant=None, **kw):
+        p = Path(work_dir) / "variant_00.mp4"
+        p.write_bytes(b"vid0")
+        r = {"index": 0, "pack": "clean", "subtitle_mode": "word_only",
+             "path": str(p), "compose_s": 1.0, "stamp_s": 1.0,
+             "reused_base": False}
+        if on_variant is not None:
+            try:
+                on_variant(r)   # mirrors run_render_job swallowing callback errors
+            except Exception:
+                pass
+        return [r]
+
+    monkeypatch.setattr(h, "run_render_job", fake_run_render_job)
+    out = h.handler({"input": {**_base_input(),
+                               "variants": [["clean", "word_only"]]}})
+
+    assert out["ok"], out
+    assert calls["copy2"] == 2                       # mid-render failed, post-loop retried
+    assert out["variants"][0]["key"] == "clipper/j/out/variant_00_clean.mp4"
+    assert (vol / "clipper/j/out/variant_00_clean.mp4").exists()
+    assert "path" not in out["variants"][0]
+    # no .part leftover from the failed first write
+    names = sorted(p.name for p in (vol / "clipper/j/out").iterdir())
+    assert names == ["variant_00_clean.mp4"]
