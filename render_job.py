@@ -100,6 +100,7 @@ def run_render_job(
     work_dir: Path,
     brand_is_watermark: bool = True,
     brand_channel: str | None = None,
+    on_variant=None,
 ) -> list[dict]:
     """Compose + stamp every variant. Returns a per-variant result list.
 
@@ -109,6 +110,11 @@ def run_render_job(
 
     Each result dict: ``{index, pack, subtitle_mode, path, compose_s, stamp_s,
     reused_base}``.
+
+    ``on_variant`` (optional) is called with each result dict the moment that
+    variant is stamped, so the caller can publish it while later variants are
+    still rendering. Callback errors are swallowed: the variant keeps its
+    local ``path`` and the caller's end-of-job pass picks it up.
     """
     work_dir = Path(work_dir)
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -174,5 +180,11 @@ def run_render_job(
             "stamp_s": round(stamp_s, 2),
             "reused_base": reused,
         })
+
+        if on_variant is not None:
+            try:
+                on_variant(results[-1])
+            except Exception:
+                pass  # best-effort: the handler's post-loop republishes
 
     return results

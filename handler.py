@@ -276,6 +276,32 @@ def handler(event: dict) -> dict:
                 n = int(inp.get("variants_count", 3))
                 variants = [(d.pack, d.subtitle_mode) for d in pick_style_descriptors(n)]
 
+        # Progressive publish: with a volume output_prefix each variant is
+        # copied onto the shared volume the moment it's stamped, atomically
+        # (.part temp + os.replace) so the app's mid-job prefix scan never
+        # sees a partial mp4. return_video still needs local paths in the
+        # post-loop (base64), so it opts out.
+        progressive = bool(output_prefix) and not return_video
+
+        def _volume_write(p: Path, r: dict) -> None:
+            idx = int(r.get("index", 0))
+            pack = r.get("pack", "")
+            rel = f"{output_prefix}/variant_{idx:02d}_{pack}.mp4"
+            dst = VOLUME_ROOT / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            tmp = dst.with_name(dst.name + ".part")
+            shutil.copy2(p, tmp)
+            os.replace(tmp, dst)
+            r["key"] = rel
+
+        def _publish(r: dict) -> None:
+            p = Path(r["path"])
+            r["bytes"] = p.stat().st_size if p.exists() else 0
+            r["duration_s"] = _probe_duration(p)
+            if p.exists():
+                _volume_write(p, r)
+            r.pop("path", None)
+
         if compose_only:
             # Single-clip /generate offload: compose the unstyled base only.
             results = compose_base_only(
@@ -298,22 +324,19 @@ def handler(event: dict) -> dict:
                 work_dir=work_dir,
                 brand_is_watermark=True,
                 brand_channel=inp.get("brand_channel"),
+                on_variant=_publish if progressive else None,
             )
 
         for r in results:
+            if "path" not in r:
+                continue  # already published mid-render by _publish
             p = Path(r["path"])
             r["bytes"] = p.stat().st_size if p.exists() else 0
             r["duration_s"] = _probe_duration(p)
             if output_prefix and p.exists():
-                # Volume mode: write the variant back onto the shared volume and
-                # return its key; the app GETs it over the S3 gateway.
-                idx = int(r.get("index", 0))
-                pack = r.get("pack", "")
-                rel = f"{output_prefix}/variant_{idx:02d}_{pack}.mp4"
-                dst = VOLUME_ROOT / rel
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(p, dst)
-                r["key"] = rel
+                # Volume mode: write the variant back onto the shared volume
+                # and return its key; the app GETs it over the S3 gateway.
+                _volume_write(p, r)
             elif upload_results and p.exists():
                 r["url"] = _upload_litterbox(p, ttl=result_ttl)
             if return_video and p.exists():
