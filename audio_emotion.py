@@ -136,9 +136,12 @@ def analyze_emotions(
             break
         t_start = round(start / SAMPLE_RATE, 2)
         t_end = round((start + len(chunk)) / SAMPLE_RATE, 2)
+        # ban_emo_unk=True forces the SER head to commit to a concrete emotion
+        # instead of the EMO_UNKNOWN escape token, which otherwise dominates on
+        # continuous/noisy audio and makes the emotion channel useless.
         res = model.generate(
             input=chunk, fs=SAMPLE_RATE, cache={},
-            language="auto", use_itn=False,
+            language="auto", use_itn=False, ban_emo_unk=True,
         )
         raw = res[0]["text"] if res else ""
         parsed = _parse_tags(raw)
