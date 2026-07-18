@@ -19,6 +19,11 @@ Two input modes:
               Used to verify that an object PUT at S3 key ``clipper/x/y.mp4``
               lands at ``/runpod-volume/clipper/x/y.mp4``.
 
+  audio_analyze — SenseVoice-Small emotion + audio-event tag timeline over an
+              audio file (``source_key`` on the volume or ``source_url``).
+              Returns the tag timeline + tallies inline (audio-analysis probe
+              for the detection rework — not part of the render path).
+
 Either way the response carries the ffmpeg capability probe so you can confirm
 ``h264_nvenc`` is actually being used on the box.
 
@@ -205,6 +210,58 @@ def handler(event: dict) -> dict:
     if inp.get("volume_ls"):
         return {"ok": True, "mode": "volume_ls",
                 "volume": _list_tree(VOLUME_ROOT)}
+
+    # Audio-analysis probe: SenseVoice emotion + audio-event tag timeline.
+    # Independent of the render path — reads an audio file (volume source_key
+    # or downloaded source_url) and returns a tag timeline inline.
+    if inp.get("audio_analyze"):
+        from audio_emotion import analyze_emotions
+
+        t0 = time.time()
+        work = Path(tempfile.mkdtemp(prefix="cl1pper_audio_"))
+        try:
+            source_key = inp.get("source_key")
+            if source_key:
+                src = VOLUME_ROOT / source_key
+                if not src.exists():
+                    return {"ok": False,
+                            "error": f"source_key not found on volume: {src}",
+                            "volume": _list_tree(VOLUME_ROOT)}
+            elif inp.get("source_url"):
+                src = work / "audio_in"
+                _download(inp["source_url"], src)
+            else:
+                return {"ok": False,
+                        "error": "audio_analyze requires 'source_key' or 'source_url'"}
+
+            result = analyze_emotions(
+                src,
+                window_s=float(inp.get("window_s", 15.0)),
+                max_seconds=(float(inp["max_seconds"])
+                             if inp.get("max_seconds") else None),
+            )
+
+            # Optional: persist the full timeline to the volume for the record.
+            out_key = None
+            output_prefix = inp.get("output_prefix")
+            if output_prefix:
+                out_key = f"{output_prefix}/emotions.json"
+                dst = VOLUME_ROOT / out_key
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                tmp = dst.with_suffix(".part")
+                tmp.write_text(json.dumps(result), encoding="utf-8")
+                os.replace(tmp, dst)
+
+            return {
+                "ok": True, "mode": "audio_analyze",
+                "emotions_key": out_key,
+                "result": result,
+                "total_s": round(time.time() - t0, 2),
+            }
+        except Exception as e:
+            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
 
     selftest = bool(inp.get("selftest", False))
     compose_only = bool(inp.get("compose_only", False))

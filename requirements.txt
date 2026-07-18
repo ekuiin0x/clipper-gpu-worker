@@ -3,3 +3,7 @@ numpy>=1.24
 pillow>=10.0
 fonttools>=4.43
 pydantic>=2.0
+# Audio-analysis probe (audio_analyze mode): SenseVoice-Small via FunASR.
+# torch/torchaudio are installed from the CPU wheel index in the Dockerfile
+# BEFORE this file so funasr resolves against them.
+funasr>=1.1.0
